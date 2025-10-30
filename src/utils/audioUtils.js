@@ -4,11 +4,20 @@ const extractAudio = require("ffmpeg-extract-audio");
 const { log } = require("./logger");
 
 /**
- * Check if a file is already an audio file based on extension
+ * Check if a file is already an audio file based on extension and content type
  * OpenAI Whisper supports: mp3, mp4, mpeg, mpga, m4a, wav, webm
+ * 
+ * Note: Some extensions like .webm and .mp4 can be either audio or video.
+ * We prioritize content type detection over extension.
  */
 const isAudioFile = (filePath, contentType = null) => {
-  const audioExtensions = [".mp3", ".mp4", ".mpeg", ".mpga", ".m4a", ".wav", ".webm", ".ogg", ".flac"];
+  // Pure audio-only extensions (never contain video)
+  const audioOnlyExtensions = [".mp3", ".mpga", ".m4a", ".wav", ".ogg", ".flac", ".aac"];
+  
+  // Ambiguous extensions that can be audio OR video
+  const ambiguousExtensions = [".mp4", ".mpeg", ".webm"];
+  
+  // Audio MIME types
   const audioMimeTypes = [
     "audio/mpeg",
     "audio/mp3",
@@ -19,22 +28,84 @@ const isAudioFile = (filePath, contentType = null) => {
     "audio/ogg",
     "audio/flac",
     "audio/x-m4a",
+    "audio/aac",
+  ];
+  
+  // Video MIME types (definitely not audio-only)
+  const videoMimeTypes = [
+    "video/mp4",
+    "video/mpeg",
+    "video/webm",
+    "video/quicktime",
+    "video/x-msvideo", // .avi
+    "video/x-matroska", // .mkv
+    "video/3gpp",
+    "video/x-flv",
   ];
 
-  // Check by extension
   const ext = path.extname(filePath).toLowerCase();
-  if (audioExtensions.includes(ext)) {
-    return true;
-  }
+  const normalizedContentType = contentType ? contentType.toLowerCase() : null;
 
-  // Check by content type
-  if (contentType) {
-    const normalizedContentType = contentType.toLowerCase();
+  // If we have a content type, check it first (most reliable)
+  if (normalizedContentType) {
+    // If content type is explicitly video, it's NOT an audio-only file
+    if (videoMimeTypes.some((type) => normalizedContentType.includes(type))) {
+      log("INFO", "File detected as video via content type", {
+        filePath,
+        contentType: normalizedContentType,
+      });
+      return false;
+    }
+    
+    // If content type is explicitly audio, it IS an audio-only file
     if (audioMimeTypes.some((type) => normalizedContentType.includes(type))) {
+      log("INFO", "File detected as audio via content type", {
+        filePath,
+        contentType: normalizedContentType,
+      });
       return true;
     }
   }
 
+  // Check by extension (only if content type didn't help)
+  // Pure audio-only extensions are definitely audio
+  if (audioOnlyExtensions.includes(ext)) {
+    log("INFO", "File detected as audio via extension", {
+      filePath,
+      extension: ext,
+    });
+    return true;
+  }
+  
+  // Ambiguous extensions (.webm, .mp4, .mpeg) - need content type to determine
+  // If we don't have content type and it's an ambiguous extension, 
+  // default to treating as video (since most .webm/.mp4 files are video)
+  if (ambiguousExtensions.includes(ext)) {
+    if (normalizedContentType) {
+      // We already checked content type above, so if we get here,
+      // content type didn't match video or audio - more conservative, treat as video
+      log("INFO", "Ambiguous extension with unknown content type, treating as video", {
+        filePath,
+        extension: ext,
+        contentType: normalizedContentType,
+      });
+      return false;
+    } else {
+      // No content type info - for ambiguous extensions, assume video
+      log("INFO", "Ambiguous extension without content type, defaulting to video", {
+        filePath,
+        extension: ext,
+      });
+      return false;
+    }
+  }
+
+  // Unknown extension - default to treating as video (safer)
+  log("INFO", "Unknown extension, defaulting to video", {
+    filePath,
+    extension: ext,
+    contentType: normalizedContentType,
+  });
   return false;
 };
 
@@ -75,7 +146,7 @@ const extractAudioFromVideo = async (inputPath, outputPath, ffmpegPath) => {
   return {
     extractionTime,
     outputSizeBytes: outputStats.size,
-    outputSizeMB,
+    outputSizeMB: outputSizeInMB,
     stats: outputStats,
   };
 };

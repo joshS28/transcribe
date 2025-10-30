@@ -208,6 +208,7 @@ const generateSummary = async (text, customPrompt = null) => {
 };
 
 module.exports = {
+  getOpenAIClient,
   transcribeAudio,
   analyzeSentiment,
   generateSummary,

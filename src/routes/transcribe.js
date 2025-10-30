@@ -9,6 +9,7 @@ const {
   estimateAudioDuration,
 } = require("../utils/audioUtils");
 const { transcribeAudio, analyzeSentiment, generateSummary } = require("../utils/openaiUtils");
+const { analyzeVideoContent } = require("../utils/videoUtils");
 
 const router = express.Router();
 
@@ -18,6 +19,8 @@ const ffmpegPath = configureFFmpeg();
 /**
  * POST /api/transcribe
  * Transcribes audio/video from a URL using OpenAI Whisper
+ * 
+ * For video files, also performs video content analysis (people detection, activities, location, etc.)
  *
  * Request body:
  *   - url (required): The URL of the audio/video file to transcribe
@@ -28,6 +31,12 @@ const ffmpegPath = configureFFmpeg();
  *   - transcription: The transcribed text
  *   - sentiment: Sentiment analysis results with all supporting info
  *   - summary: Summary of the transcribed content
+ *   - videoAnalysis: Video content analysis results (only for video files)
+ *     - summary: Overall video summary
+ *     - aggregatedAnalysis: Aggregated statistics (people count, activities, locations, etc.)
+ *     - frameCount: Number of frames analyzed
+ *     - processingTimeMs: Time taken for video analysis
+ *     - tokenUsage: Token usage for video analysis
  *   - metadata: Processing times and token usage
  */
 router.post("/transcribe", async (req, res) => {
@@ -124,8 +133,78 @@ router.post("/transcribe", async (req, res) => {
       // Validate the extracted audio file (size already validated in extractionResult)
     }
 
-    // Step 4: Transcribe using OpenAI Whisper
-    const transcriptionResult = await transcribeAudio(audioFilePath);
+    // Step 4: Transcribe using OpenAI Whisper and analyze video content (if video) in parallel
+    const transcriptionPromise = transcribeAudio(audioFilePath);
+    
+    // If it's a video file, run video analysis in parallel
+    let videoAnalysisResult = null;
+    let videoAnalysisError = null;
+    
+    log("INFO", "Setting up parallel processing", {
+      fileIsAudio,
+      hasTempInputPath: !!tempInputPath,
+      willRunVideoAnalysis: !fileIsAudio && !!tempInputPath,
+    });
+    
+    let videoAnalysisPromise = Promise.resolve();
+    
+    if (!fileIsAudio && tempInputPath) {
+      log("INFO", "Starting video content analysis in parallel with transcription", {
+        videoPath: tempInputPath,
+        intervalSeconds: 5,
+        maxFrames: 6,
+      });
+      
+      videoAnalysisPromise = analyzeVideoContent(tempInputPath, {
+        intervalSeconds: 5,
+        maxFrames: 6,
+        ffmpegPath: ffmpegPath,
+      })
+        .then((result) => {
+          videoAnalysisResult = result;
+          log("INFO", "Video content analysis completed successfully", {
+            framesAnalyzed: result.metadata?.framesAnalyzed,
+            processingTimeMs: result.metadata?.processingTimeMs,
+            hasSummary: !!result.summary,
+            hasAggregated: !!result.aggregatedAnalysis,
+          });
+          return result;
+        })
+        .catch((error) => {
+          videoAnalysisError = error;
+          log("ERROR", "Video content analysis failed (will continue with transcription)", {
+            error: error.message,
+            stack: error.stack,
+          });
+          // Don't fail the entire request if video analysis fails
+          throw error; // Re-throw so promise rejects, but we handle it
+        });
+    } else {
+      log("INFO", "Skipping video analysis", {
+        reason: fileIsAudio ? "file is audio, not video" : "no temp input path",
+      });
+    }
+
+    // Wait for transcription and video analysis (if applicable)
+    log("INFO", "Waiting for transcription and video analysis to complete...");
+    const transcriptionResult = await transcriptionPromise;
+    
+    // Wait for video analysis but don't let errors stop us
+    try {
+      const videoResult = await videoAnalysisPromise;
+      if (videoResult) {
+        videoAnalysisResult = videoResult;
+      }
+    } catch (error) {
+      // Error already logged in catch block above
+      // videoAnalysisError is already set
+    }
+    
+    log("INFO", "Parallel processing completed", {
+      transcriptionCompleted: !!transcriptionResult,
+      videoAnalysisCompleted: !!videoAnalysisResult,
+      videoAnalysisError: videoAnalysisError ? videoAnalysisError.message : null,
+    });
     const audioDurationMinutes = estimateAudioDuration(outputSizeMB);
 
     // Step 5: Analyze sentiment
@@ -173,6 +252,8 @@ router.post("/transcribe", async (req, res) => {
       wordCount: transcriptionResult.wordCount,
       url: originalUrl,
       fileWasAudio: fileIsAudio,
+      videoAnalysisCompleted: !!videoAnalysisResult,
+      videoAnalysisError: videoAnalysisError ? videoAnalysisError.message : null,
       tokenUsage: {
         whisper: {
           note: "Whisper API is priced per minute of audio, not per token",
@@ -181,12 +262,28 @@ router.post("/transcribe", async (req, res) => {
         },
         sentiment: sentimentResult.tokenUsage,
         summarization: summaryResult.tokenUsage,
-        total: totalTokenUsage.total,
+        videoAnalysis: videoAnalysisResult?.metadata?.tokenUsage || null,
+        total: {
+          ...totalTokenUsage.total,
+          ...(videoAnalysisResult?.metadata?.tokenUsage?.total
+            ? {
+                promptTokens:
+                  totalTokenUsage.total.promptTokens +
+                  videoAnalysisResult.metadata.tokenUsage.total.promptTokens,
+                completionTokens:
+                  totalTokenUsage.total.completionTokens +
+                  videoAnalysisResult.metadata.tokenUsage.total.completionTokens,
+                totalTokens:
+                  totalTokenUsage.total.totalTokens +
+                  videoAnalysisResult.metadata.tokenUsage.total.totalTokens,
+              }
+            : {}),
+        },
       },
     });
 
     // Build response with all required fields
-    return res.status(200).json({
+    const response = {
       url: originalUrl,
       transcription: transcriptionResult.text,
       sentiment: {
@@ -224,7 +321,69 @@ router.post("/transcribe", async (req, res) => {
         },
         fileWasAudio: fileIsAudio,
       },
+    };
+
+    // Add video analysis results if available
+    log("INFO", "Checking video analysis results for response", {
+      hasResult: !!videoAnalysisResult,
+      hasError: !!videoAnalysisError,
+      fileIsAudio,
+      resultType: videoAnalysisResult ? typeof videoAnalysisResult : "null",
     });
+    
+    if (videoAnalysisResult) {
+      log("INFO", "Adding video analysis to response", {
+        hasSummary: !!videoAnalysisResult.summary,
+        hasAggregated: !!videoAnalysisResult.aggregatedAnalysis,
+        framesAnalyzed: videoAnalysisResult.metadata?.framesAnalyzed,
+      });
+      
+      response.videoAnalysis = {
+        summary: videoAnalysisResult.summary,
+        aggregatedAnalysis: videoAnalysisResult.aggregatedAnalysis,
+        frameCount: videoAnalysisResult.metadata?.framesAnalyzed || 0,
+        processingTimeMs: videoAnalysisResult.metadata?.processingTimeMs || 0,
+        tokenUsage: videoAnalysisResult.metadata?.tokenUsage || null,
+      };
+      
+      // Add video analysis processing time to metadata
+      if (videoAnalysisResult.metadata?.processingTimeMs) {
+        response.metadata.processingTimes.videoAnalysis = videoAnalysisResult.metadata.processingTimeMs;
+      }
+      
+      // Add video analysis token usage to metadata
+      if (videoAnalysisResult.metadata?.tokenUsage?.total) {
+        response.metadata.tokenUsage.videoAnalysis = videoAnalysisResult.metadata.tokenUsage;
+        response.metadata.tokenUsage.total = {
+          promptTokens:
+            totalTokenUsage.total.promptTokens +
+            videoAnalysisResult.metadata.tokenUsage.total.promptTokens,
+          completionTokens:
+            totalTokenUsage.total.completionTokens +
+            videoAnalysisResult.metadata.tokenUsage.total.completionTokens,
+          totalTokens:
+            totalTokenUsage.total.totalTokens +
+            videoAnalysisResult.metadata.tokenUsage.total.totalTokens,
+        };
+      }
+    } else if (videoAnalysisError && !fileIsAudio) {
+      // Include error info if video analysis was attempted but failed
+      log("INFO", "Adding video analysis error to response", {
+        errorMessage: videoAnalysisError.message,
+      });
+      response.videoAnalysis = {
+        error: true,
+        errorMessage: videoAnalysisError.message,
+      };
+    } else if (!fileIsAudio) {
+      // Video file but no analysis result or error - this shouldn't happen but log it
+      log("WARN", "Video file detected but no video analysis result or error", {
+        hasResult: !!videoAnalysisResult,
+        hasError: !!videoAnalysisError,
+      });
+    }
+
+    return res.status(200).json(response);
   } catch (error) {
     const totalTime = Date.now() - startTime;
     const errorDetails = {

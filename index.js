@@ -23,6 +23,11 @@ const {
   cleanupFiles,
 } = require("./src/utils/fileUtils");
 const {
+  extractFrames,
+  analyzeVideoContent,
+  aggregateFrameAnalyses,
+} = require("./src/utils/videoUtils");
+const {
   DEFAULT_SUMMARIZATION_PROMPT,
   configureFFmpeg,
 } = require("./src/utils/config");
@@ -122,6 +127,11 @@ module.exports = {
       createTempPaths,
       downloadFile,
       cleanupFiles,
+    },
+    video: {
+      extractFrames,
+      analyzeVideoContent,
+      aggregateFrameAnalyses,
     },
     config: {
       DEFAULT_SUMMARIZATION_PROMPT,
