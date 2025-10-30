@@ -3,9 +3,25 @@ const fs = require("fs");
 const { log } = require("./logger");
 const { DEFAULT_SUMMARIZATION_PROMPT } = require("./config");
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// Lazy-load OpenAI client to support dynamic API key configuration
+let openaiClient = null;
+
+/**
+ * Get or create OpenAI client instance
+ * This allows the API key to be set dynamically via process.env
+ */
+const getOpenAIClient = () => {
+  if (!openaiClient) {
+    const apiKey = process.env.OPENAI_API_KEY;
+    if (!apiKey) {
+      throw new Error("OPENAI_API_KEY is not set. Please set it in your environment or pass it to createTranscriptionRouter.");
+    }
+    openaiClient = new OpenAI({
+      apiKey,
+    });
+  }
+  return openaiClient;
+};
 
 /**
  * Transcribe audio file using OpenAI Whisper
@@ -17,6 +33,7 @@ const transcribeAudio = async (audioFilePath) => {
     model: "whisper-1",
   });
 
+  const openai = getOpenAIClient();
   const transcription = await openai.audio.transcriptions.create({
     file: fs.createReadStream(audioFilePath),
     model: "whisper-1",
@@ -74,6 +91,7 @@ const analyzeSentiment = async (text) => {
   };
 
   try {
+    const openai = getOpenAIClient();
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
     const response = await openai.chat.completions.create({
       model,
@@ -151,6 +169,7 @@ const generateSummary = async (text, customPrompt = null) => {
   };
 
   try {
+    const openai = getOpenAIClient();
     const model = process.env.OPENAI_MODEL || "gpt-4o-mini";
     const response = await openai.chat.completions.create({
       model,

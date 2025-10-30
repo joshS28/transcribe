@@ -2,7 +2,104 @@
 
 A standalone Express.js API service for transcribing **audio and video files** from URLs using OpenAI's Whisper model, with built-in sentiment analysis and summarization capabilities.
 
-## ✨ Quick Start
+This package can be used in two ways:
+1. **As an npm package** - Install and use as middleware in your existing Express apps
+2. **As a standalone server** - Run your own transcription API server
+
+---
+
+## 📦 Using as an npm Package
+
+### Installation
+
+```bash
+npm install @your-org/audio-transcription-openai
+```
+
+**Note:** Before publishing, update the package name in `package.json` to match your npm org or use an unscoped name like `audio-transcription-openai`.
+
+### Quick Start
+
+#### Option 1: Add Router to Existing Express App
+
+```javascript
+const express = require('express');
+const { createTranscriptionRouter } = require('@your-org/audio-transcription-openai');
+
+const app = express();
+
+// Set your OpenAI API key (or use process.env.OPENAI_API_KEY)
+app.use('/api', createTranscriptionRouter({
+  openaiApiKey: process.env.OPENAI_API_KEY,
+  basePath: '/api'
+}));
+
+app.listen(3000, () => {
+  console.log('Server running on port 3000');
+  console.log('Transcription endpoint: http://localhost:3000/api/transcribe');
+});
+```
+
+#### Option 2: Create Standalone App
+
+```javascript
+const { createTranscriptionApp } = require('@your-org/audio-transcription-openai');
+
+const app = createTranscriptionApp({
+  openaiApiKey: process.env.OPENAI_API_KEY,
+  basePath: '/api'
+});
+
+app.listen(3000, () => {
+  console.log('Transcription API running on port 3000');
+});
+```
+
+#### Option 3: Use Individual Utilities
+
+```javascript
+const { utils } = require('@your-org/audio-transcription-openai');
+
+// Use individual utilities
+const { transcribeAudio, analyzeSentiment } = utils.openai;
+const { downloadFile, cleanupFiles } = utils.file;
+const { isAudioFile, validateFileSize } = utils.audio;
+
+// Example: Transcribe a local file
+const result = await transcribeAudio('/path/to/audio.mp3');
+console.log(result.text);
+```
+
+### Environment Variables
+
+Make sure to set your OpenAI API key:
+
+```bash
+export OPENAI_API_KEY=sk-your-key-here
+```
+
+Or in your `.env` file:
+
+```env
+OPENAI_API_KEY=sk-your-key-here
+OPENAI_MODEL=gpt-4o-mini
+```
+
+### API Usage (Same as Standalone)
+
+Once integrated, use the same API endpoints:
+
+```bash
+curl -X POST http://localhost:3000/api/transcribe \
+  -H "Content-Type: application/json" \
+  -d '{"url": "https://example.com/audio.mp3"}'
+```
+
+---
+
+## 🚀 Using as Standalone Server
+
+### ✨ Quick Start
 
 Get up and running in 3 steps:
 
