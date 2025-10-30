@@ -13,7 +13,7 @@ This package can be used in two ways:
 ### Installation
 
 ```bash
-npm install @joshS28/transcribe
+npm install @staffojo/transcribe
 ```
 
 ### Quick Start
@@ -22,7 +22,7 @@ npm install @joshS28/transcribe
 
 ```javascript
 const express = require('express');
-const { createTranscriptionRouter } = require('@joshS28/transcribe');
+const { createTranscriptionRouter } = require('@staffojo/transcribe');
 
 const app = express();
 
@@ -41,7 +41,7 @@ app.listen(3000, () => {
 #### Option 2: Create Standalone App
 
 ```javascript
-const { createTranscriptionApp } = require('@joshS28/transcribe');
+const { createTranscriptionApp } = require('@staffojo/transcribe');
 
 const app = createTranscriptionApp({
   openaiApiKey: process.env.OPENAI_API_KEY,
@@ -56,7 +56,7 @@ app.listen(3000, () => {
 #### Option 3: Use Individual Utilities
 
 ```javascript
-const { utils } = require('@joshS28/transcribe');
+const { utils } = require('@staffojo/transcribe');
 
 // Use individual utilities
 const { transcribeAudio, analyzeSentiment } = utils.openai;

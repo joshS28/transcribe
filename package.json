@@ -1,5 +1,5 @@
 {
-  "name": "@joshS28/transcribe",
+  "name": "@staffojo/transcribe",
   "version": "1.0.0",
   "description": "Express middleware and utilities for transcribing audio/video files with OpenAI Whisper, sentiment analysis, and summarization",
   "main": "index.js",
