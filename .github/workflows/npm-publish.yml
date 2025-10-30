@@ -29,6 +29,13 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           scope: '@staffojo'
       - run: npm ci
+      - name: Set package version from release tag
+        run: |
+          VERSION="${{ github.event.release.tag_name }}"
+          # strip leading 'v' if present (e.g. v1.2.3 -> 1.2.3)
+          VERSION="${VERSION#v}"
+          echo "Using version: $VERSION"
+          npm version --no-git-tag-version "$VERSION"
       - run: npm publish --access public
         env:
           NODE_AUTH_TOKEN: ${{secrets.NPM_TOKEN}}
