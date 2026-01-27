@@ -10,6 +10,11 @@ const {
 } = require("../utils/audioUtils");
 const { transcribeAudio, analyzeSentiment, generateSummary } = require("../utils/openaiUtils");
 const { analyzeVideoContent } = require("../utils/videoUtils");
+const {
+  calculateAnswerQuality,
+  calculateVideoQuality,
+  calculateOverallQuality,
+} = require("../utils/qualityScoring");
 
 const router = express.Router();
 
@@ -133,14 +138,14 @@ router.post("/transcribe", async (req, res) => {
       // Validate the extracted audio file (size already validated in extractionResult)
     }
 
-    // Step 4: Transcribe using OpenAI Whisper and analyze video content (if video) in parallel
+    // Step 4: Transcribe using OpenAI Whisper and analyze video content (if video) for quality scoring
     const transcriptionPromise = transcribeAudio(audioFilePath);
     
-    // If it's a video file, run video analysis in parallel
+    // Run video analysis for quality scoring (lighter version - fewer frames for speed)
     let videoAnalysisResult = null;
     let videoAnalysisError = null;
     
-    log("INFO", "Setting up parallel processing", {
+    log("INFO", "Setting up transcription and video analysis for quality scoring", {
       fileIsAudio,
       hasTempInputPath: !!tempInputPath,
       willRunVideoAnalysis: !fileIsAudio && !!tempInputPath,
@@ -149,24 +154,22 @@ router.post("/transcribe", async (req, res) => {
     let videoAnalysisPromise = Promise.resolve();
     
     if (!fileIsAudio && tempInputPath) {
-      log("INFO", "Starting video content analysis in parallel with transcription", {
+      log("INFO", "Starting video content analysis for quality scoring", {
         videoPath: tempInputPath,
-        intervalSeconds: 5,
-        maxFrames: 6,
+        intervalSeconds: 10, // Extract every 10 seconds (faster than before)
+        maxFrames: 3, // Only 3 frames (faster than before)
       });
       
       videoAnalysisPromise = analyzeVideoContent(tempInputPath, {
-        intervalSeconds: 5,
-        maxFrames: 6,
+        intervalSeconds: 10, // Faster: every 10 seconds instead of 5
+        maxFrames: 3, // Faster: only 3 frames instead of 6
         ffmpegPath: ffmpegPath,
       })
         .then((result) => {
           videoAnalysisResult = result;
-          log("INFO", "Video content analysis completed successfully", {
+          log("INFO", "Video content analysis completed for quality scoring", {
             framesAnalyzed: result.metadata?.framesAnalyzed,
             processingTimeMs: result.metadata?.processingTimeMs,
-            hasSummary: !!result.summary,
-            hasAggregated: !!result.aggregatedAnalysis,
           });
           return result;
         })
@@ -174,10 +177,8 @@ router.post("/transcribe", async (req, res) => {
           videoAnalysisError = error;
           log("ERROR", "Video content analysis failed (will continue with transcription)", {
             error: error.message,
-            stack: error.stack,
           });
           // Don't fail the entire request if video analysis fails
-          throw error; // Re-throw so promise rejects, but we handle it
         });
     } else {
       log("INFO", "Skipping video analysis", {
@@ -185,25 +186,20 @@ router.post("/transcribe", async (req, res) => {
       });
     }
 
-    // Wait for transcription and video analysis (if applicable)
-    log("INFO", "Waiting for transcription and video analysis to complete...");
+    // Wait for transcription to complete
+    log("INFO", "Waiting for transcription to complete...");
     const transcriptionResult = await transcriptionPromise;
     
     // Wait for video analysis but don't let errors stop us
     try {
-      const videoResult = await videoAnalysisPromise;
-      if (videoResult) {
-        videoAnalysisResult = videoResult;
-      }
+      await videoAnalysisPromise;
     } catch (error) {
       // Error already logged in catch block above
-      // videoAnalysisError is already set
     }
     
-    log("INFO", "Parallel processing completed", {
+    log("INFO", "Transcription completed", {
       transcriptionCompleted: !!transcriptionResult,
       videoAnalysisCompleted: !!videoAnalysisResult,
-      videoAnalysisError: videoAnalysisError ? videoAnalysisError.message : null,
     });
     const audioDurationMinutes = estimateAudioDuration(outputSizeMB);
 
@@ -212,6 +208,23 @@ router.post("/transcribe", async (req, res) => {
 
     // Step 6: Generate summary
     const summaryResult = await generateSummary(transcriptionResult.text, summarizationPrompt);
+
+    // Step 6.5: Calculate quality scores
+    log("INFO", "Calculating quality scores");
+    const answerQuality = calculateAnswerQuality(transcriptionResult.text, {
+      wordCount: transcriptionResult.wordCount,
+      length: transcriptionResult.length,
+    });
+    
+    const videoQuality = calculateVideoQuality(videoAnalysisResult, fileIsAudio);
+    const overallQuality = calculateOverallQuality(answerQuality, videoQuality);
+    
+    log("INFO", "Quality scores calculated", {
+      answerQualityScore: answerQuality.score,
+      videoQualityScore: videoQuality.score,
+      overallScore: overallQuality.overallScore,
+      recommendation: overallQuality.recommendation,
+    });
 
     // Step 7: Clean up temporary files
     const cleanupStartTime = Date.now();
@@ -297,6 +310,30 @@ router.post("/transcribe", async (req, res) => {
         tokenUsage: sentimentResult.tokenUsage,
       },
       summary: summaryResult.summary,
+      qualityScores: {
+        answerQuality: {
+          score: answerQuality.score,
+          maxScore: answerQuality.maxScore,
+          breakdown: answerQuality.breakdown,
+          reasons: answerQuality.reasons,
+          metrics: answerQuality.metrics,
+        },
+        videoQuality: {
+          score: videoQuality.score,
+          maxScore: videoQuality.maxScore,
+          breakdown: videoQuality.breakdown,
+          reasons: videoQuality.reasons,
+          metrics: videoQuality.metrics,
+        },
+        overall: {
+          score: overallQuality.overallScore,
+          maxScore: overallQuality.maxScore,
+          recommendation: overallQuality.recommendation, // "keep", "review", or "discard"
+          recommendationReason: overallQuality.recommendationReason,
+          weights: overallQuality.weights,
+          combinedReasons: overallQuality.combinedReasons,
+        },
+      },
       metadata: {
         transcriptionLength: transcriptionResult.length,
         wordCount: transcriptionResult.wordCount,
